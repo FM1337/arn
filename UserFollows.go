@@ -6,10 +6,18 @@ import (
 	"github.com/aerogo/nano"
 )
 
-// UserFollows ...
+// UserFollows is a list including IDs to users you follow.
 type UserFollows struct {
 	UserID string   `json:"userId"`
 	Items  []string `json:"items"`
+}
+
+// NewUserFollows creates a new UserFollows list.
+func NewUserFollows(userID string) *UserFollows {
+	return &UserFollows{
+		UserID: userID,
+		Items:  []string{},
+	}
 }
 
 // Add adds an user to the list if it hasn't been added yet.
@@ -28,14 +36,19 @@ func (list *UserFollows) Add(userID string) error {
 	user, err := GetUser(userID)
 
 	if err == nil {
+		if !user.Settings().Notification.NewFollowers {
+			return nil
+		}
+
 		follower, err := GetUser(list.UserID)
 
 		if err == nil {
-			user.SendNotification(&Notification{
+			user.SendNotification(&PushNotification{
 				Title:   "You have a new follower!",
 				Message: follower.Nick + " started following you.",
-				Icon:    "https:" + follower.LargeAvatar(),
+				Icon:    "https:" + follower.AvatarLink("large"),
 				Link:    "https://notify.moe" + follower.Link(),
+				Type:    NotificationTypeFollow,
 			})
 		}
 	}
@@ -76,6 +89,19 @@ func (list *UserFollows) Users() []*User {
 	}
 
 	return follows
+}
+
+// UserFollowerCountMap returns a map of user ID keys and their corresping number of followers as the value.
+func UserFollowerCountMap() map[string]int {
+	followCount := map[string]int{}
+
+	for list := range StreamUserFollows() {
+		for _, followUserID := range list.Items {
+			followCount[followUserID]++
+		}
+	}
+
+	return followCount
 }
 
 // GetUserFollows ...

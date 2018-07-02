@@ -7,26 +7,21 @@ import (
 	"github.com/aerogo/nano"
 )
 
-// Thread represents a forum thread.
+// Thread is a forum thread.
 type Thread struct {
-	ID       string   `json:"id"`
-	Title    string   `json:"title" editable:"true"`
-	Text     string   `json:"text" editable:"true"`
-	AuthorID string   `json:"authorId"`
-	Sticky   int      `json:"sticky"`
-	Tags     []string `json:"tags"`
-	Likes    []string `json:"likes"`
-	Posts    []string `json:"posts"`
-	Created  string   `json:"created"`
-	Edited   string   `json:"edited"`
+	Title  string   `json:"title" editable:"true"`
+	Text   string   `json:"text" editable:"true" type:"textarea"`
+	Sticky int      `json:"sticky" editable:"true"`
+	Tags   []string `json:"tags" editable:"true"`
+	Posts  []string `json:"posts"`
+	Edited string   `json:"edited"`
+
+	HasID
+	HasCreator
+	HasLikes
+	HasLocked
 
 	html string
-}
-
-// Author returns the thread author.
-func (thread *Thread) Author() *User {
-	author, _ := GetUser(thread.AuthorID)
-	return author
 }
 
 // Link returns the relative URL of the thread.
@@ -42,6 +37,52 @@ func (thread *Thread) HTML() string {
 
 	thread.html = markdown.Render(thread.Text)
 	return thread.html
+}
+
+// String implements the default string serialization.
+func (thread *Thread) String() string {
+	return thread.Title
+}
+
+// OnLike is called when the thread receives a like.
+func (thread *Thread) OnLike(likedBy *User) {
+	if !thread.Creator().Settings().Notification.ForumLikes {
+		return
+	}
+
+	go func() {
+		thread.Creator().SendNotification(&PushNotification{
+			Title:   likedBy.Nick + " liked your thread",
+			Message: likedBy.Nick + " liked your thread \"" + thread.Title + "\"",
+			Icon:    "https:" + likedBy.AvatarLink("large"),
+			Link:    "https://notify.moe" + likedBy.Link(),
+			Type:    NotificationTypeLike,
+		})
+	}()
+}
+
+// OnLock is called when the thread is locked.
+func (thread *Thread) OnLock(user *User) {
+	logEntry := NewEditLogEntry(user.ID, "edit", "Thread", thread.ID, "Locked", "false", "true")
+	logEntry.Save()
+}
+
+// OnUnlock is called when the thread is unlocked.
+func (thread *Thread) OnUnlock(user *User) {
+	logEntry := NewEditLogEntry(user.ID, "edit", "Thread", thread.ID, "Locked", "true", "false")
+	logEntry.Save()
+}
+
+// Remove post from the post list.
+func (thread *Thread) Remove(postID string) bool {
+	for index, item := range thread.Posts {
+		if item == postID {
+			thread.Posts = append(thread.Posts[:index], thread.Posts[index+1:]...)
+			return true
+		}
+	}
+
+	return false
 }
 
 // ToPostable converts a thread into an object that implements the Postable interface.
@@ -79,7 +120,7 @@ func GetThreadsByUser(user *User) []*Thread {
 	var threads []*Thread
 
 	for thread := range StreamThreads() {
-		if thread.AuthorID == user.ID {
+		if thread.CreatedBy == user.ID {
 			threads = append(threads, thread)
 		}
 	}
@@ -132,41 +173,4 @@ func SortThreadsLatestFirst(threads []*Thread) {
 	sort.Slice(threads, func(i, j int) bool {
 		return threads[i].Created > threads[j].Created
 	})
-}
-
-// Like ...
-func (thread *Thread) Like(userID string) {
-	for _, id := range thread.Likes {
-		if id == userID {
-			return
-		}
-	}
-
-	thread.Likes = append(thread.Likes, userID)
-
-	// Notify author of the thread
-	go func() {
-		likedBy, err := GetUser(userID)
-
-		if err != nil {
-			return
-		}
-
-		thread.Author().SendNotification(&Notification{
-			Title:   likedBy.Nick + " liked your thread",
-			Message: likedBy.Nick + " liked your thread \"" + thread.Title + "\"",
-			Icon:    "https:" + likedBy.LargeAvatar(),
-			Link:    "https://notify.moe" + likedBy.Link(),
-		})
-	}()
-}
-
-// Unlike ...
-func (thread *Thread) Unlike(userID string) {
-	for index, id := range thread.Likes {
-		if id == userID {
-			thread.Likes = append(thread.Likes[:index], thread.Likes[index+1:]...)
-			return
-		}
-	}
 }

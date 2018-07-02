@@ -25,9 +25,9 @@ func (postable *ThreadPostable) HTML() string {
 	return postable.thread.HTML()
 }
 
-// Author returns the user object representing the thread's author.
-func (postable *ThreadPostable) Author() *User {
-	return postable.thread.Author()
+// Creator returns the user object representing the thread's author.
+func (postable *ThreadPostable) Creator() *User {
+	return postable.thread.Creator()
 }
 
 // Likes returns an array of user IDs for the post.
@@ -37,13 +37,7 @@ func (postable *ThreadPostable) Likes() []string {
 
 // LikedBy tells you whether the given user has liked the thread.
 func (postable *ThreadPostable) LikedBy(userID string) bool {
-	for _, id := range postable.thread.Likes {
-		if id == userID {
-			return true
-		}
-	}
-
-	return false
+	return postable.thread.LikedBy(userID)
 }
 
 // Link returns the relative URL of the thread.

@@ -11,15 +11,15 @@ const (
 
 // AnimeListItem ...
 type AnimeListItem struct {
-	AnimeID      string       `json:"animeId"`
-	Status       string       `json:"status" editable:"true"`
-	Episodes     int          `json:"episodes" editable:"true"`
-	Rating       *AnimeRating `json:"rating"`
-	Notes        string       `json:"notes" editable:"true"`
-	RewatchCount int          `json:"rewatchCount" editable:"true"`
-	Private      bool         `json:"private" editable:"true"`
-	Created      string       `json:"created"`
-	Edited       string       `json:"edited"`
+	AnimeID      string              `json:"animeId"`
+	Status       string              `json:"status" editable:"true"`
+	Episodes     int                 `json:"episodes" editable:"true"`
+	Rating       AnimeListItemRating `json:"rating"`
+	Notes        string              `json:"notes" editable:"true"`
+	RewatchCount int                 `json:"rewatchCount" editable:"true"`
+	Private      bool                `json:"private" editable:"true"`
+	Created      string              `json:"created"`
+	Edited       string              `json:"edited"`
 }
 
 // Anime fetches the associated anime data.
@@ -33,6 +33,24 @@ func (item *AnimeListItem) Link(userNick string) string {
 	return "/+" + userNick + "/animelist/anime/" + item.AnimeID
 }
 
+// StatusHumanReadable returns the human readable representation of the status.
+func (item *AnimeListItem) StatusHumanReadable() string {
+	switch item.Status {
+	case AnimeListStatusWatching:
+		return "Watching"
+	case AnimeListStatusCompleted:
+		return "Completed"
+	case AnimeListStatusPlanned:
+		return "Planned"
+	case AnimeListStatusHold:
+		return "On Hold"
+	case AnimeListStatusDropped:
+		return "Dropped"
+	default:
+		return "Unknown"
+	}
+}
+
 // OnEpisodesChange is called when the watched episode count changes.
 func (item *AnimeListItem) OnEpisodesChange() {
 	maxEpisodesKnown := item.Anime().EpisodeCount != 0
@@ -44,7 +62,7 @@ func (item *AnimeListItem) OnEpisodesChange() {
 	}
 
 	// We set episodes lower than the max but the status is set as completed.
-	if item.Status == AnimeListStatusCompleted && maxEpisodesKnown && item.Episodes != item.Anime().EpisodeCount {
+	if item.Status == AnimeListStatusCompleted && maxEpisodesKnown && item.Episodes < item.Anime().EpisodeCount {
 		// Set status back to watching.
 		item.Status = AnimeListStatusWatching
 	}

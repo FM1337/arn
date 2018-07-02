@@ -25,9 +25,9 @@ func (postable *PostPostable) HTML() string {
 	return postable.post.HTML()
 }
 
-// Author returns the user object representing the post's author.
-func (postable *PostPostable) Author() *User {
-	return postable.post.Author()
+// Creator returns the user object representing the post's author.
+func (postable *PostPostable) Creator() *User {
+	return postable.post.Creator()
 }
 
 // Likes returns an array of user IDs for the post.
@@ -37,13 +37,7 @@ func (postable *PostPostable) Likes() []string {
 
 // LikedBy tells you whether the given user has liked the post.
 func (postable *PostPostable) LikedBy(userID string) bool {
-	for _, id := range postable.post.Likes {
-		if id == userID {
-			return true
-		}
-	}
-
-	return false
+	return postable.post.LikedBy(userID)
 }
 
 // Link returns the relative URL of the post.

@@ -2,6 +2,9 @@ package arn
 
 import (
 	"errors"
+	"os"
+	"os/exec"
+	"path"
 	"sort"
 	"strings"
 
@@ -10,18 +13,20 @@ import (
 	"github.com/fatih/color"
 )
 
-// SoundTrack ...
+// SoundTrack is a soundtrack used in one or multiple anime.
 type SoundTrack struct {
-	ID        string           `json:"id"`
-	Title     string           `json:"title" editable:"true"`
-	Media     []*ExternalMedia `json:"media" editable:"true"`
-	Tags      []string         `json:"tags" editable:"true" tooltip:"<ul><li><strong>anime:ID</strong> to connect it with anime</li><li><strong>opening</strong> for openings</li><li><strong>ending</strong> for endings</li><li><strong>cover</strong> for covers</li><li><strong>remix</strong> for remixes</li></ul>"`
-	Likes     []string         `json:"likes"`
-	IsDraft   bool             `json:"isDraft" editable:"true"`
-	Created   string           `json:"created"`
-	CreatedBy string           `json:"createdBy"`
-	Edited    string           `json:"edited"`
-	EditedBy  string           `json:"editedBy"`
+	Title  SoundTrackTitle  `json:"title" editable:"true"`
+	Media  []*ExternalMedia `json:"media" editable:"true"`
+	Links  []*Link          `json:"links" editable:"true"`
+	Lyrics SoundTrackLyrics `json:"lyrics" editable:"true"`
+	Tags   []string         `json:"tags" editable:"true" tooltip:"<ul><li><strong>anime:ID</strong> to connect it with anime (e.g. anime:yF1RhKiiR)</li><li><strong>opening</strong> for openings</li><li><strong>ending</strong> for endings</li><li><strong>op:NUMBER</strong> or <strong>ed:NUMBER</strong> if it has more than one OP/ED (e.g. op:2 or ed:3)</li><li><strong>cover</strong> for covers</li><li><strong>remix</strong> for remixes</li><li><strong>male</strong> or <strong>female</strong></li><li><strong title='Has lyrics'>vocal</strong>, <strong title='Has orchestral instruments, mostly no lyrics'>orchestral</strong> or <strong title='Has a mix of different instruments, mostly no lyrics'>instrumental</strong></li></ul>"`
+	File   string           `json:"file"`
+
+	HasID
+	HasCreator
+	HasEditor
+	HasLikes
+	HasDraft
 }
 
 // Link returns the permalink for the track.
@@ -29,7 +34,7 @@ func (track *SoundTrack) Link() string {
 	return "/soundtrack/" + track.ID
 }
 
-// MediaByService ...
+// MediaByService returns a slice of all media by the given service.
 func (track *SoundTrack) MediaByService(service string) []*ExternalMedia {
 	filtered := []*ExternalMedia{}
 
@@ -42,6 +47,17 @@ func (track *SoundTrack) MediaByService(service string) []*ExternalMedia {
 	return filtered
 }
 
+// HasMediaByService returns true if the track has media by the given service.
+func (track *SoundTrack) HasMediaByService(service string) bool {
+	for _, media := range track.Media {
+		if media.Service == service {
+			return true
+		}
+	}
+
+	return false
+}
+
 // HasTag returns true if it contains the given tag.
 func (track *SoundTrack) HasTag(search string) bool {
 	for _, tag := range track.Tags {
@@ -51,6 +67,11 @@ func (track *SoundTrack) HasTag(search string) bool {
 	}
 
 	return false
+}
+
+// HasLyrics returns true if the track has lyrics in any language.
+func (track *SoundTrack) HasLyrics() bool {
+	return track.Lyrics.Native != "" || track.Lyrics.Romaji != ""
 }
 
 // Anime fetches all tagged anime of the sound track.
@@ -74,18 +95,14 @@ func (track *SoundTrack) Anime() []*Anime {
 	return animeList
 }
 
-// Beatmaps returns all osu beatmap IDs of the sound track.
-func (track *SoundTrack) Beatmaps() []string {
-	var beatmaps []string
+// OsuBeatmaps returns all osu beatmap IDs of the sound track.
+func (track *SoundTrack) OsuBeatmaps() []string {
+	return FilterIDTags(track.Tags, "osu-beatmap")
+}
 
-	for _, tag := range track.Tags {
-		if strings.HasPrefix(tag, "osu-beatmap:") {
-			osuID := strings.TrimPrefix(tag, "osu-beatmap:")
-			beatmaps = append(beatmaps, osuID)
-		}
-	}
-
-	return beatmaps
+// EtternaBeatmaps returns all Etterna song IDs of the sound track.
+func (track *SoundTrack) EtternaBeatmaps() []string {
+	return FilterIDTags(track.Tags, "etterna")
 }
 
 // MainAnime ...
@@ -99,7 +116,7 @@ func (track *SoundTrack) MainAnime() *Anime {
 	return allAnime[0]
 }
 
-// Creator ...
+// Creator returns the user who created this track.
 func (track *SoundTrack) Creator() *User {
 	user, _ := GetUser(track.CreatedBy)
 	return user
@@ -111,13 +128,29 @@ func (track *SoundTrack) EditedByUser() *User {
 	return user
 }
 
-// Publish ...
-func (track *SoundTrack) Publish() error {
-	// No draft
-	if !track.IsDraft {
-		return errors.New("Not a draft")
+// OnLike is called when the soundtrack receives a like.
+func (track *SoundTrack) OnLike(likedBy *User) {
+	if likedBy.ID == track.CreatedBy {
+		return
 	}
 
+	if !track.Creator().Settings().Notification.SoundTrackLikes {
+		return
+	}
+
+	go func() {
+		track.Creator().SendNotification(&PushNotification{
+			Title:   likedBy.Nick + " liked your soundtrack " + track.Title.ByUser(track.Creator()),
+			Message: likedBy.Nick + " liked your soundtrack " + track.Title.ByUser(track.Creator()) + ".",
+			Icon:    "https:" + likedBy.AvatarLink("large"),
+			Link:    "https://notify.moe" + likedBy.Link(),
+			Type:    NotificationTypeLike,
+		})
+	}()
+}
+
+// Publish ...
+func (track *SoundTrack) Publish() error {
 	// No media added
 	if len(track.Media) == 0 {
 		return errors.New("No media specified (at least 1 media source is required)")
@@ -126,7 +159,7 @@ func (track *SoundTrack) Publish() error {
 	animeFound := false
 
 	for _, tag := range track.Tags {
-		tag = autocorrect.FixTag(tag)
+		tag = autocorrect.Tag(tag)
 
 		if strings.HasPrefix(tag, "anime:") {
 			animeID := strings.TrimPrefix(tag, "anime:")
@@ -150,25 +183,27 @@ func (track *SoundTrack) Publish() error {
 		return errors.New("Need to specify at least one tag")
 	}
 
-	track.IsDraft = false
-	draftIndex, err := GetDraftIndex(track.CreatedBy)
+	// Publish
+	err := publish(track)
 
 	if err != nil {
 		return err
 	}
 
-	if draftIndex.SoundTrackID == "" {
-		return errors.New("Soundtrack draft doesn't exist in the user draft index")
-	}
+	// Start download in the background
+	go func() {
+		err := track.Download()
 
-	draftIndex.SoundTrackID = ""
-	draftIndex.Save()
+		if err == nil {
+			track.Save()
+		}
+	}()
+
 	return nil
 }
 
 // Unpublish ...
 func (track *SoundTrack) Unpublish() error {
-	track.IsDraft = true
 	draftIndex, err := GetDraftIndex(track.CreatedBy)
 
 	if err != nil {
@@ -179,15 +214,111 @@ func (track *SoundTrack) Unpublish() error {
 		return errors.New("You still have an unfinished draft")
 	}
 
+	track.IsDraft = true
 	draftIndex.SoundTrackID = track.ID
 	draftIndex.Save()
 	return nil
+}
+
+// Download downloads the track.
+func (track *SoundTrack) Download() error {
+	if track.IsDraft {
+		return errors.New("Track is a draft")
+	}
+
+	youtubeVideos := track.MediaByService("Youtube")
+
+	if len(youtubeVideos) == 0 {
+		return errors.New("No Youtube ID")
+	}
+
+	youtubeID := youtubeVideos[0].ServiceID
+
+	// Check for existing file
+	if track.File != "" {
+		stat, err := os.Stat(path.Join(Root, "audio", track.File))
+
+		if err == nil && !stat.IsDir() && stat.Size() > 0 {
+			return errors.New("Already downloaded")
+		}
+	}
+
+	audioDirectory := path.Join(Root, "audio")
+	baseName := track.ID + "|" + youtubeID
+
+	// Check if it exists on the file system
+	fullPath := FindFileWithExtension(baseName, audioDirectory, []string{
+		".opus",
+		".webm",
+		".ogg",
+		".m4a",
+		".mp3",
+		".flac",
+		".wav",
+	})
+
+	// In case we added the file but didn't register it in database
+	if fullPath != "" {
+		extension := path.Ext(fullPath)
+		track.File = baseName + extension
+		return nil
+	}
+
+	filePath := path.Join(audioDirectory, baseName)
+
+	// Download
+	cmd := exec.Command("youtube-dl", "--extract-audio", "--audio-quality", "0", "--output", filePath+".%(ext)s", youtubeID)
+	err := cmd.Start()
+
+	if err != nil {
+		return err
+	}
+
+	err = cmd.Wait()
+
+	if err != nil {
+		return err
+	}
+
+	// Find downloaded file
+	fullPath = FindFileWithExtension(baseName, audioDirectory, []string{
+		".opus",
+		".webm",
+		".ogg",
+		".m4a",
+		".mp3",
+		".flac",
+		".wav",
+	})
+
+	extension := path.Ext(fullPath)
+	track.File = baseName + extension
+	return nil
+}
+
+// String implements the default string serialization.
+func (track *SoundTrack) String() string {
+	return track.Title.ByUser(nil)
 }
 
 // SortSoundTracksLatestFirst ...
 func SortSoundTracksLatestFirst(tracks []*SoundTrack) {
 	sort.Slice(tracks, func(i, j int) bool {
 		return tracks[i].Created > tracks[j].Created
+	})
+}
+
+// SortSoundTracksPopularFirst ...
+func SortSoundTracksPopularFirst(tracks []*SoundTrack) {
+	sort.Slice(tracks, func(i, j int) bool {
+		aLikes := len(tracks[i].Likes)
+		bLikes := len(tracks[j].Likes)
+
+		if aLikes == bLikes {
+			return tracks[i].Created > tracks[j].Created
+		}
+
+		return aLikes > bLikes
 	})
 }
 
@@ -218,18 +349,18 @@ func StreamSoundTracks() chan *SoundTrack {
 }
 
 // AllSoundTracks ...
-func AllSoundTracks() ([]*SoundTrack, error) {
+func AllSoundTracks() []*SoundTrack {
 	var all []*SoundTrack
 
 	for obj := range StreamSoundTracks() {
 		all = append(all, obj)
 	}
 
-	return all, nil
+	return all
 }
 
 // FilterSoundTracks filters all soundtracks by a custom function.
-func FilterSoundTracks(filter func(*SoundTrack) bool) ([]*SoundTrack, error) {
+func FilterSoundTracks(filter func(*SoundTrack) bool) []*SoundTrack {
 	var filtered []*SoundTrack
 
 	for obj := range StreamSoundTracks() {
@@ -238,37 +369,5 @@ func FilterSoundTracks(filter func(*SoundTrack) bool) ([]*SoundTrack, error) {
 		}
 	}
 
-	return filtered, nil
-}
-
-// Like adds an user to the track's Like array if they aren't already in it.
-func (track *SoundTrack) Like(userID string) {
-	for _, id := range track.Likes {
-		if id == userID {
-			return
-		}
-	}
-
-	track.Likes = append(track.Likes, userID)
-}
-
-// Unlike removes the user from the track's Likes array if they are in it.
-func (track *SoundTrack) Unlike(userID string) {
-	for index, id := range track.Likes {
-		if id == userID {
-			track.Likes = append(track.Likes[:index], track.Likes[index+1:]...)
-			return
-		}
-	}
-}
-
-// LikedBy checks to see if the user has liked the track
-func (track *SoundTrack) LikedBy(userID string) bool {
-	for _, id := range track.Likes {
-		if id == userID {
-			return true
-		}
-	}
-
-	return false
+	return filtered
 }

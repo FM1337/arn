@@ -7,24 +7,18 @@ import (
 	"github.com/aerogo/nano"
 )
 
-// Post represents a forum post.
+// Post is a forum post.
 type Post struct {
-	ID       string   `json:"id"`
-	Text     string   `json:"text" editable:"true"`
-	AuthorID string   `json:"authorId"`
+	Text     string   `json:"text" editable:"true" type:"textarea"`
 	ThreadID string   `json:"threadId"`
-	Tags     []string `json:"tags"`
-	Likes    []string `json:"likes"`
-	Created  string   `json:"created"`
+	Tags     []string `json:"tags" editable:"true"`
 	Edited   string   `json:"edited"`
 
-	html string
-}
+	HasID
+	HasCreator
+	HasLikes
 
-// Author returns the post author.
-func (post *Post) Author() *User {
-	author, _ := GetUser(post.AuthorID)
-	return author
+	html string
 }
 
 // Thread returns the thread this post was posted in.
@@ -46,6 +40,34 @@ func (post *Post) HTML() string {
 
 	post.html = markdown.Render(post.Text)
 	return post.html
+}
+
+// String implements the default string serialization.
+func (post *Post) String() string {
+	const maxLen = 170
+
+	if len(post.Text) > maxLen {
+		return post.Text[:maxLen-3] + "..."
+	}
+
+	return post.Text
+}
+
+// OnLike is called when the post receives a like.
+func (post *Post) OnLike(likedBy *User) {
+	if !post.Creator().Settings().Notification.ForumLikes {
+		return
+	}
+
+	go func() {
+		post.Creator().SendNotification(&PushNotification{
+			Title:   likedBy.Nick + " liked your post",
+			Message: likedBy.Nick + " liked your post in the thread \"" + post.Thread().Title + "\"",
+			Icon:    "https:" + likedBy.AvatarLink("large"),
+			Link:    "https://notify.moe" + likedBy.Link(),
+			Type:    NotificationTypeLike,
+		})
+	}()
 }
 
 // ToPostable converts a post into an object that implements the Postable interface.
@@ -132,7 +154,7 @@ func GetPostsByUser(user *User) ([]*Post, error) {
 	var posts []*Post
 
 	for post := range StreamPosts() {
-		if post.AuthorID == user.ID {
+		if post.CreatedBy == user.ID {
 			posts = append(posts, post)
 		}
 	}
@@ -151,41 +173,4 @@ func FilterPosts(filter func(*Post) bool) ([]*Post, error) {
 	}
 
 	return filtered, nil
-}
-
-// Like ...
-func (post *Post) Like(userID string) {
-	for _, id := range post.Likes {
-		if id == userID {
-			return
-		}
-	}
-
-	post.Likes = append(post.Likes, userID)
-
-	// Notify author of the post
-	go func() {
-		likedBy, err := GetUser(userID)
-
-		if err != nil {
-			return
-		}
-
-		post.Author().SendNotification(&Notification{
-			Title:   likedBy.Nick + " liked your post",
-			Message: likedBy.Nick + " liked your post in the thread \"" + post.Thread().Title + "\"",
-			Icon:    "https:" + likedBy.LargeAvatar(),
-			Link:    "https://notify.moe" + likedBy.Link(),
-		})
-	}()
-}
-
-// Unlike ...
-func (post *Post) Unlike(userID string) {
-	for index, id := range post.Likes {
-		if id == userID {
-			post.Likes = append(post.Likes[:index], post.Likes[index+1:]...)
-			return
-		}
-	}
 }

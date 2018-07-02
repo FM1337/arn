@@ -3,45 +3,31 @@ package arn
 import (
 	"sort"
 
-	"github.com/aerogo/nano"
 	"github.com/aerogo/markdown"
+	"github.com/aerogo/nano"
 )
 
-// GroupPost represents a group post.
+// GroupPost is a group post.
 type GroupPost struct {
-	ID       string   `json:"id"`
 	Text     string   `json:"text" editable:"true"`
-	AuthorID string   `json:"authorId"`
 	GroupID  string   `json:"groupId"`
+	ParentID string   `json:"parentId"`
+	ChildIDs []string `json:"children"`
 	Tags     []string `json:"tags"`
-	Likes    []string `json:"likes"`
 	IsDraft  bool     `json:"isDraft" editable:"true"`
-	Created  string   `json:"created"`
 	Edited   string   `json:"edited"`
 
-	author *User
-	group  *Group
-	html   string
-}
+	HasID
+	HasCreator
+	HasLikes
 
-// Author returns the group post's author.
-func (post *GroupPost) Author() *User {
-	if post.author != nil {
-		return post.author
-	}
-
-	post.author, _ = GetUser(post.AuthorID)
-	return post.author
+	html string
 }
 
 // Group returns the group post's group.
 func (post *GroupPost) Group() *Group {
-	if post.group != nil {
-		return post.group
-	}
-
-	post.group, _ = GetGroup(post.GroupID)
-	return post.group
+	group, _ := GetGroup(post.GroupID)
+	return group
 }
 
 // Link returns the relative URL of the group post.
@@ -51,12 +37,35 @@ func (post *GroupPost) Link() string {
 
 // HTML returns the HTML representation of the group post.
 func (post *GroupPost) HTML() string {
-	if post.html != "" {
-		return post.html
+	return markdown.Render(post.Text)
+}
+
+// String implements the default string serialization.
+func (post *GroupPost) String() string {
+	const maxLen = 170
+
+	if len(post.Text) > maxLen {
+		return post.Text[:maxLen-3] + "..."
 	}
 
-	post.html = markdown.Render(post.Text)
-	return post.html
+	return post.Text
+}
+
+// OnLike is called when the group post receives a like.
+func (post *GroupPost) OnLike(likedBy *User) {
+	if !post.Creator().Settings().Notification.GroupPostLikes {
+		return
+	}
+
+	go func() {
+		post.Creator().SendNotification(&PushNotification{
+			Title:   likedBy.Nick + " liked your post",
+			Message: likedBy.Nick + " liked your post in the group \"" + post.Group().Name + "\"",
+			Icon:    "https:" + likedBy.AvatarLink("large"),
+			Link:    "https://notify.moe" + likedBy.Link(),
+			Type:    NotificationTypeLike,
+		})
+	}()
 }
 
 // GetGroupPost ...
@@ -117,7 +126,7 @@ func GetGroupPostsByUser(user *User) ([]*GroupPost, error) {
 	var posts []*GroupPost
 
 	for post := range StreamGroupPosts() {
-		if post.AuthorID == user.ID {
+		if post.CreatedBy == user.ID {
 			posts = append(posts, post)
 		}
 	}
@@ -136,41 +145,4 @@ func FilterGroupPosts(filter func(*GroupPost) bool) ([]*GroupPost, error) {
 	}
 
 	return filtered, nil
-}
-
-// Like ...
-func (post *GroupPost) Like(userID string) {
-	for _, id := range post.Likes {
-		if id == userID {
-			return
-		}
-	}
-
-	post.Likes = append(post.Likes, userID)
-
-	// Notify author of the post
-	go func() {
-		likedBy, err := GetUser(userID)
-
-		if err != nil {
-			return
-		}
-
-		post.Author().SendNotification(&Notification{
-			Title:   likedBy.Nick + " liked your post",
-			Message: likedBy.Nick + " liked your post in the group \"" + post.Group().Name + "\"",
-			Icon:    "https:" + likedBy.LargeAvatar(),
-			Link:    "https://notify.moe" + likedBy.Link(),
-		})
-	}()
-}
-
-// Unlike ...
-func (post *GroupPost) Unlike(userID string) {
-	for index, id := range post.Likes {
-		if id == userID {
-			post.Likes = append(post.Likes[:index], post.Likes[index+1:]...)
-			return
-		}
-	}
 }

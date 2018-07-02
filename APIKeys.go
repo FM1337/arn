@@ -1,16 +1,17 @@
 package arn
 
 import (
-	"encoding/json"
-	"errors"
 	"io/ioutil"
 	"os"
 	"path"
-	"strings"
 
 	"github.com/animenotifier/anilist"
 	"github.com/animenotifier/osu"
+	jsoniter "github.com/json-iterator/go"
 )
+
+// Root is the full path to the root directory of notify.moe repository.
+var Root = path.Join(os.Getenv("GOPATH"), "src/github.com/animenotifier/notify.moe")
 
 // APIKeys are global API keys for several services
 var APIKeys APIKeysData
@@ -70,42 +71,28 @@ type APIKeysData struct {
 		PublicKey  string `json:"publicKey"`
 		PrivateKey string `json:"privateKey"`
 	} `json:"vapid"`
+
+	SMTP struct {
+		Server   string `json:"server"`
+		Address  string `json:"address"`
+		Password string `json:"password"`
+	} `json:"smtp"`
 }
 
 func init() {
-	rootPath := ""
-	exe, err := os.Executable()
+	apiKeysPath := path.Join(Root, "security/api-keys.json")
 
-	if err != nil {
-		panic(err)
-	}
-
-	if strings.Index(exe, "/notify.moe") == -1 {
-		exe, err = os.Getwd()
+	if _, err := os.Stat(apiKeysPath); os.IsNotExist(err) {
+		defaultAPIKeysPath := path.Join(Root, "security/default/api-keys.json")
+		err := os.Link(defaultAPIKeysPath, apiKeysPath)
 
 		if err != nil {
 			panic(err)
 		}
 	}
 
-	arnIndex := strings.Index(exe, "/animenotifier")
-
-	if arnIndex == -1 {
-		panic(errors.New("Couldn't find notify.moe directory"))
-	} else {
-		rootPath = path.Join(exe[:arnIndex], "animenotifier")
-	}
-
-	apiKeysPath := path.Join(rootPath, "notify.moe", "security", "api-keys.json")
-
-	if _, err = os.Stat(apiKeysPath); os.IsNotExist(err) {
-		// If everything else fails, use hard-coded path.
-		// This is needed for some benchmarks and tests.
-		apiKeysPath = "/home/eduard/workspace/src/github.com/animenotifier/notify.moe/security/api-keys.json"
-	}
-
 	data, _ := ioutil.ReadFile(apiKeysPath)
-	err = json.Unmarshal(data, &APIKeys)
+	err := jsoniter.Unmarshal(data, &APIKeys)
 
 	if err != nil {
 		panic(err)

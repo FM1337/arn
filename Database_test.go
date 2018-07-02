@@ -1,9 +1,12 @@
-package arn
+package arn_test
 
-import "testing"
+import (
+	"testing"
+
+	"github.com/animenotifier/arn"
+	"github.com/stretchr/testify/assert"
+)
 
 func TestConnect(t *testing.T) {
-	if !DB.Client.IsConnected() {
-		t.Fail()
-	}
+	assert.NotEmpty(t, arn.DB.Node().Address().String())
 }

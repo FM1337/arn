@@ -4,8 +4,6 @@ import (
 	"image"
 	"os"
 	"path"
-
-	"github.com/chai2010/webp"
 )
 
 // OriginalImageExtensions includes all the formats that an avatar source could have sent to us.
@@ -14,14 +12,6 @@ var OriginalImageExtensions = []string{
 	".png",
 	".gif",
 }
-
-const (
-	// AvatarSmallSize is the minimum size in pixels of an avatar.
-	AvatarSmallSize = 100
-
-	// AvatarMaxSize is the maximum size in pixels of an avatar.
-	AvatarMaxSize = 560
-)
 
 // LoadImage loads an image from the given path.
 func LoadImage(path string) (img image.Image, format string, err error) {
@@ -38,21 +28,6 @@ func LoadImage(path string) (img image.Image, format string, err error) {
 	}
 
 	return img, format, nil
-}
-
-// SaveWebP saves an image as a file in WebP format.
-func SaveWebP(img image.Image, out string, quality float32) error {
-	file, writeErr := os.Create(out)
-
-	if writeErr != nil {
-		return writeErr
-	}
-
-	encodeErr := webp.Encode(file, img, &webp.Options{
-		Quality: quality,
-	})
-
-	return encodeErr
 }
 
 // FindFileWithExtension tries to test different file extensions.

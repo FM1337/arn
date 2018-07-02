@@ -2,6 +2,7 @@ package arn
 
 import (
 	"errors"
+	"fmt"
 	"reflect"
 	"strings"
 
@@ -11,11 +12,14 @@ import (
 
 // Force interface implementations
 var (
-	_ Publishable   = (*SoundTrack)(nil)
-	_ Likeable      = (*SoundTrack)(nil)
-	_ api.Newable   = (*SoundTrack)(nil)
-	_ api.Editable  = (*SoundTrack)(nil)
-	_ api.Deletable = (*SoundTrack)(nil)
+	_ Publishable            = (*SoundTrack)(nil)
+	_ Likeable               = (*SoundTrack)(nil)
+	_ LikeEventReceiver      = (*SoundTrack)(nil)
+	_ fmt.Stringer           = (*SoundTrack)(nil)
+	_ api.Newable            = (*SoundTrack)(nil)
+	_ api.Editable           = (*SoundTrack)(nil)
+	_ api.Deletable          = (*SoundTrack)(nil)
+	_ api.ArrayEventListener = (*SoundTrack)(nil)
 )
 
 // Actions
@@ -50,11 +54,22 @@ func (soundtrack *SoundTrack) Create(ctx *aero.Context) error {
 	soundtrack.Media = []*ExternalMedia{}
 	soundtrack.Tags = []string{}
 
+	// Write log entry
+	logEntry := NewEditLogEntry(user.ID, "create", "SoundTrack", soundtrack.ID, "", "", "")
+	logEntry.Save()
+
 	return soundtrack.Unpublish()
 }
 
 // Edit updates the external media object.
 func (soundtrack *SoundTrack) Edit(ctx *aero.Context, key string, value reflect.Value, newValue reflect.Value) (bool, error) {
+	user := GetUserFromContext(ctx)
+
+	// Write log entry
+	logEntry := NewEditLogEntry(user.ID, "edit", "SoundTrack", soundtrack.ID, key, fmt.Sprint(value.Interface()), fmt.Sprint(newValue.Interface()))
+	logEntry.Save()
+
+	// Verify service name
 	if strings.HasPrefix(key, "Media[") && strings.HasSuffix(key, ".Service") {
 		newService := newValue.String()
 		found := false
@@ -77,11 +92,36 @@ func (soundtrack *SoundTrack) Edit(ctx *aero.Context, key string, value reflect.
 	return false, nil
 }
 
+// OnAppend saves a log entry.
+func (soundtrack *SoundTrack) OnAppend(ctx *aero.Context, key string, index int, obj interface{}) {
+	user := GetUserFromContext(ctx)
+	logEntry := NewEditLogEntry(user.ID, "arrayAppend", "SoundTrack", soundtrack.ID, fmt.Sprintf("%s[%d]", key, index), "", fmt.Sprint(obj))
+	logEntry.Save()
+}
+
+// OnRemove saves a log entry.
+func (soundtrack *SoundTrack) OnRemove(ctx *aero.Context, key string, index int, obj interface{}) {
+	user := GetUserFromContext(ctx)
+	logEntry := NewEditLogEntry(user.ID, "arrayRemove", "SoundTrack", soundtrack.ID, fmt.Sprintf("%s[%d]", key, index), fmt.Sprint(obj), "")
+	logEntry.Save()
+}
+
 // AfterEdit updates the metadata.
 func (soundtrack *SoundTrack) AfterEdit(ctx *aero.Context) error {
 	soundtrack.Edited = DateTimeUTC()
 	soundtrack.EditedBy = GetUserFromContext(ctx).ID
 	return nil
+}
+
+// DeleteInContext deletes the soundtrack in the given context.
+func (soundtrack *SoundTrack) DeleteInContext(ctx *aero.Context) error {
+	user := GetUserFromContext(ctx)
+
+	// Write log entry
+	logEntry := NewEditLogEntry(user.ID, "delete", "SoundTrack", soundtrack.ID, "", fmt.Sprint(soundtrack), "")
+	logEntry.Save()
+
+	return soundtrack.Delete()
 }
 
 // Delete deletes the object from the database.
@@ -98,8 +138,16 @@ func (soundtrack *SoundTrack) Delete() error {
 
 // Authorize returns an error if the given API POST request is not authorized.
 func (soundtrack *SoundTrack) Authorize(ctx *aero.Context, action string) error {
-	if !ctx.HasSession() {
-		return errors.New("Neither logged in nor in session")
+	user := GetUserFromContext(ctx)
+
+	if user == nil {
+		return errors.New("Not logged in")
+	}
+
+	if action == "delete" {
+		if user.Role != "editor" && user.Role != "admin" {
+			return errors.New("Insufficient permissions")
+		}
 	}
 
 	return nil

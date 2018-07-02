@@ -41,38 +41,8 @@ type PushEndpoint struct {
 	} `json:"keys"`
 }
 
-// UserCoverImage ...
-type UserCoverImage struct {
-	URL      string      `json:"url"`
-	Position CSSPosition `json:"position"`
-}
-
 // CSSPosition ...
 type CSSPosition struct {
 	X string `json:"x"`
 	Y string `json:"y"`
 }
-
-// NickToUser ...
-type NickToUser struct {
-	Nick   string `json:"nick"`
-	UserID string     `json:"userId"`
-}
-
-// EmailToUser ...
-type EmailToUser struct {
-	Email  string `json:"email"`
-	UserID string     `json:"userId"`
-}
-
-// GoogleToUser ...
-type GoogleToUser struct {
-	ID     string `json:"id"`
-	UserID string     `json:"userId"`
-}
-
-// FacebookToUser is the same data structure as GoogleToUser
-type FacebookToUser GoogleToUser
-
-// TwitterToUser is the same data structure as GoogleToUser
-type TwitterToUser GoogleToUser

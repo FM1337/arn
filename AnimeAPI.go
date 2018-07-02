@@ -2,10 +2,86 @@ package arn
 
 import (
 	"errors"
+	"fmt"
+	"os"
+	"path"
 	"reflect"
+	"strings"
 
 	"github.com/aerogo/aero"
+	"github.com/aerogo/api"
+	"github.com/fatih/color"
 )
+
+// Force interface implementations
+var (
+	_ fmt.Stringer           = (*Anime)(nil)
+	_ Likeable               = (*Anime)(nil)
+	_ api.Deletable          = (*Anime)(nil)
+	_ api.Editable           = (*Anime)(nil)
+	_ api.CustomEditable     = (*Anime)(nil)
+	_ api.ArrayEventListener = (*Anime)(nil)
+)
+
+// Actions
+func init() {
+	API.RegisterActions("Anime", []*api.Action{
+		// Like anime
+		LikeAction(),
+
+		// Unlike anime
+		UnlikeAction(),
+	})
+}
+
+// Edit creates an edit log entry.
+func (anime *Anime) Edit(ctx *aero.Context, key string, value reflect.Value, newValue reflect.Value) (consumed bool, err error) {
+	user := GetUserFromContext(ctx)
+
+	if key == "Status" {
+		oldStatus := value.String()
+		newStatus := newValue.String()
+
+		// Notify people who want to know about finished series
+		if oldStatus == "current" && newStatus == "finished" {
+			go func() {
+				for _, user := range anime.UsersWatchingOrPlanned() {
+					if !user.Settings().Notification.AnimeFinished {
+						continue
+					}
+
+					user.SendNotification(&PushNotification{
+						Title:   anime.Title.ByUser(user),
+						Message: anime.Title.ByUser(user) + " has finished airing!",
+						Icon:    anime.ImageLink("medium"),
+						Link:    "https://notify.moe" + anime.Link(),
+						Type:    NotificationTypeAnimeFinished,
+					})
+				}
+			}()
+		}
+	}
+
+	// Write log entry
+	logEntry := NewEditLogEntry(user.ID, "edit", "Anime", anime.ID, key, fmt.Sprint(value.Interface()), fmt.Sprint(newValue.Interface()))
+	logEntry.Save()
+
+	return false, nil
+}
+
+// OnAppend saves a log entry.
+func (anime *Anime) OnAppend(ctx *aero.Context, key string, index int, obj interface{}) {
+	user := GetUserFromContext(ctx)
+	logEntry := NewEditLogEntry(user.ID, "arrayAppend", "Anime", anime.ID, fmt.Sprintf("%s[%d]", key, index), "", fmt.Sprint(obj))
+	logEntry.Save()
+}
+
+// OnRemove saves a log entry.
+func (anime *Anime) OnRemove(ctx *aero.Context, key string, index int, obj interface{}) {
+	user := GetUserFromContext(ctx)
+	logEntry := NewEditLogEntry(user.ID, "arrayRemove", "Anime", anime.ID, fmt.Sprintf("%s[%d]", key, index), fmt.Sprint(obj), "")
+	logEntry.Save()
+}
 
 // Authorize returns an error if the given API POST request is not authorized.
 func (anime *Anime) Authorize(ctx *aero.Context, action string) error {
@@ -18,37 +94,115 @@ func (anime *Anime) Authorize(ctx *aero.Context, action string) error {
 	return nil
 }
 
-// VirtualEdit updates virtual properties.
-func (anime *Anime) VirtualEdit(ctx *aero.Context, key string, newValue reflect.Value) (bool, error) {
-	switch key {
-	case "Virtual:ShoboiID":
-		oldValue := anime.GetMapping("shoboi/anime")
-		newValue := newValue.Interface().(string)
+// AfterEdit updates the metadata.
+func (anime *Anime) AfterEdit(ctx *aero.Context) error {
+	anime.Edited = DateTimeUTC()
+	anime.EditedBy = GetUserFromContext(ctx).ID
+	return nil
+}
 
-		anime.RemoveMapping("shoboi/anime", oldValue)
+// DeleteInContext deletes the anime in the given context.
+func (anime *Anime) DeleteInContext(ctx *aero.Context) error {
+	user := GetUserFromContext(ctx)
 
-		if newValue != "" {
-			user := GetUserFromContext(ctx)
-			anime.AddMapping("shoboi/anime", newValue, user.ID)
+	// Write log entry
+	logEntry := NewEditLogEntry(user.ID, "delete", "Anime", anime.ID, "", fmt.Sprint(anime), "")
+	logEntry.Save()
+
+	return anime.Delete()
+}
+
+// Delete deletes the anime from the database.
+func (anime *Anime) Delete() error {
+	// Delete anime characters
+	DB.Delete("AnimeCharacters", anime.ID)
+
+	// Delete anime relations
+	DB.Delete("AnimeRelations", anime.ID)
+
+	// Delete anime episodes
+	DB.Delete("AnimeEpisodes", anime.ID)
+
+	// Delete anime list items
+	for animeList := range StreamAnimeLists() {
+		removed := animeList.Remove(anime.ID)
+
+		if removed {
+			animeList.Save()
 		}
-
-		return true, nil
-
-	case "Virtual:AniListID":
-		oldValue := anime.GetMapping("anilist/anime")
-		newValue := newValue.Interface().(string)
-
-		anime.RemoveMapping("anilist/anime", oldValue)
-
-		if newValue != "" {
-			user := GetUserFromContext(ctx)
-			anime.AddMapping("anilist/anime", newValue, user.ID)
-		}
-
-		return true, nil
 	}
 
-	return false, nil
+	// Delete anime ID from existing relations
+	for relations := range StreamAnimeRelations() {
+		removed := relations.Remove(anime.ID)
+
+		if removed {
+			relations.Save()
+		}
+	}
+
+	// Delete anime ID from quotes
+	for quote := range StreamQuotes() {
+		if quote.AnimeID == anime.ID {
+			quote.AnimeID = ""
+			quote.Save()
+		}
+	}
+
+	// Delete soundtrack tags
+	for track := range StreamSoundTracks() {
+		newTags := []string{}
+
+		for _, tag := range track.Tags {
+			if strings.HasPrefix(tag, "anime:") {
+				parts := strings.Split(tag, ":")
+				id := parts[1]
+
+				if id == anime.ID {
+					continue
+				}
+			}
+
+			newTags = append(newTags, tag)
+		}
+
+		if len(track.Tags) != len(newTags) {
+			track.Tags = newTags
+			track.Save()
+		}
+	}
+
+	// Delete images on file system
+	if anime.HasImage() {
+		err := os.Remove(path.Join(Root, "images/anime/original/", anime.ID+anime.Image.Extension))
+
+		if err != nil {
+			// Don't return the error.
+			// It's too late to stop the process at this point.
+			// Instead, log the error.
+			color.Red(err.Error())
+		}
+
+		os.Remove(path.Join(Root, "images/anime/large/", anime.ID+".jpg"))
+		os.Remove(path.Join(Root, "images/anime/large/", anime.ID+"@2.jpg"))
+		os.Remove(path.Join(Root, "images/anime/large/", anime.ID+".webp"))
+		os.Remove(path.Join(Root, "images/anime/large/", anime.ID+"@2.webp"))
+
+		os.Remove(path.Join(Root, "images/anime/medium/", anime.ID+".jpg"))
+		os.Remove(path.Join(Root, "images/anime/medium/", anime.ID+"@2.jpg"))
+		os.Remove(path.Join(Root, "images/anime/medium/", anime.ID+".webp"))
+		os.Remove(path.Join(Root, "images/anime/medium/", anime.ID+"@2.webp"))
+
+		os.Remove(path.Join(Root, "images/anime/small/", anime.ID+".jpg"))
+		os.Remove(path.Join(Root, "images/anime/small/", anime.ID+"@2.jpg"))
+		os.Remove(path.Join(Root, "images/anime/small/", anime.ID+".webp"))
+		os.Remove(path.Join(Root, "images/anime/small/", anime.ID+"@2.webp"))
+	}
+
+	// Delete the actual anime
+	DB.Delete("Anime", anime.ID)
+
+	return nil
 }
 
 // Save saves the anime in the database.

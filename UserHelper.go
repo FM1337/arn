@@ -3,13 +3,11 @@ package arn
 import (
 	"errors"
 	"sort"
-	"strconv"
 
 	"github.com/aerogo/nano"
-	"github.com/animenotifier/osu"
 )
 
-// GetUser ...
+// GetUser fetches the user with the given ID from the database.
 func GetUser(id string) (*User, error) {
 	obj, err := DB.Get("User", id)
 
@@ -20,7 +18,7 @@ func GetUser(id string) (*User, error) {
 	return obj.(*User), nil
 }
 
-// GetUserByNick ...
+// GetUserByNick fetches the user with the given nick from the database.
 func GetUserByNick(nick string) (*User, error) {
 	obj, err := DB.Get("NickToUser", nick)
 
@@ -34,8 +32,12 @@ func GetUserByNick(nick string) (*User, error) {
 	return user, err
 }
 
-// GetUserByEmail ...
+// GetUserByEmail fetches the user with the given email from the database.
 func GetUserByEmail(email string) (*User, error) {
+	if email == "" {
+		return nil, errors.New("Email is empty")
+	}
+
 	obj, err := DB.Get("EmailToUser", email)
 
 	if err != nil {
@@ -48,7 +50,7 @@ func GetUserByEmail(email string) (*User, error) {
 	return user, err
 }
 
-// GetUserByFacebookID ...
+// GetUserByFacebookID fetches the user with the given Facebook ID from the database.
 func GetUserByFacebookID(facebookID string) (*User, error) {
 	obj, err := DB.Get("FacebookToUser", facebookID)
 
@@ -62,7 +64,7 @@ func GetUserByFacebookID(facebookID string) (*User, error) {
 	return user, err
 }
 
-// GetUserByGoogleID ...
+// GetUserByGoogleID fetches the user with the given Google ID from the database.
 func GetUserByGoogleID(googleID string) (*User, error) {
 	obj, err := DB.Get("GoogleToUser", googleID)
 
@@ -120,23 +122,4 @@ func SortUsersLastSeen(users []*User) {
 	sort.Slice(users, func(i, j int) bool {
 		return users[i].LastSeen > users[j].LastSeen
 	})
-}
-
-// RefreshOsuInfo refreshes a user's Osu information.
-func (user *User) RefreshOsuInfo() error {
-	if user.Accounts.Osu.Nick == "" {
-		return errors.New("User doesn't have an osu username")
-	}
-
-	osu, err := osu.GetUser(user.Accounts.Osu.Nick)
-
-	if err != nil {
-		return err
-	}
-
-	user.Accounts.Osu.PP, _ = strconv.ParseFloat(osu.PPRaw, 64)
-	user.Accounts.Osu.Level, _ = strconv.ParseFloat(osu.Level, 64)
-	user.Accounts.Osu.Accuracy, _ = strconv.ParseFloat(osu.Accuracy, 64)
-
-	return nil
 }

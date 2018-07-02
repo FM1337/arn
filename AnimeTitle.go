@@ -2,15 +2,15 @@ package arn
 
 // AnimeTitle ...
 type AnimeTitle struct {
-	Romaji    string   `json:"romaji"`
-	English   string   `json:"english"`
-	Japanese  string   `json:"japanese"`
-	Hiragana  string   `json:"hiragana"`
-	Canonical string   `json:"canonical"`
-	Synonyms  []string `json:"synonyms"`
+	Canonical string   `json:"canonical" editable:"true"`
+	Romaji    string   `json:"romaji" editable:"true"`
+	English   string   `json:"english" editable:"true"`
+	Japanese  string   `json:"japanese" editable:"true"`
+	Hiragana  string   `json:"hiragana" editable:"true"`
+	Synonyms  []string `json:"synonyms" editable:"true"`
 }
 
-// ByUser ...
+// ByUser returns the preferred title for the given user.
 func (title *AnimeTitle) ByUser(user *User) string {
 	if user == nil {
 		return title.Canonical

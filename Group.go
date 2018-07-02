@@ -1,14 +1,11 @@
 package arn
 
 import (
-	"errors"
-
 	"github.com/aerogo/nano"
 )
 
-// Group ...
+// Group represents a group of users.
 type Group struct {
-	ID          string         `json:"id"`
 	Name        string         `json:"name" editable:"true"`
 	Tagline     string         `json:"tagline" editable:"true"`
 	Image       string         `json:"image" editable:"true"`
@@ -17,11 +14,12 @@ type Group struct {
 	Tags        []string       `json:"tags" editable:"true"`
 	Members     []*GroupMember `json:"members"`
 	Neighbors   []string       `json:"neighbors"`
-	IsDraft     bool           `json:"isDraft" editable:"true"`
-	Created     string         `json:"created"`
-	CreatedBy   string         `json:"createdBy"`
-	Edited      string         `json:"edited"`
-	EditedBy    string         `json:"editedBy"`
+
+	// Mixins
+	HasID
+	HasCreator
+	HasEditor
+	HasDraft
 
 	posts []*GroupPost
 }
@@ -58,46 +56,25 @@ func (group *Group) Creator() *User {
 	return creator
 }
 
-// Publish ...
-func (group *Group) Publish() error {
-	if !group.IsDraft {
-		return errors.New("Not a draft")
+// FindMember returns the group member by user ID, if available.
+func (group *Group) FindMember(userID string) *GroupMember {
+	for _, member := range group.Members {
+		if member.UserID == userID {
+			return member
+		}
 	}
-
-	group.IsDraft = false
-	draftIndex, err := GetDraftIndex(group.CreatedBy)
-
-	if err != nil {
-		return err
-	}
-
-	if draftIndex.GroupID == "" {
-		return errors.New("Group draft doesn't exist in the user draft index")
-	}
-
-	draftIndex.GroupID = ""
-	draftIndex.Save()
 
 	return nil
 }
 
+// Publish ...
+func (group *Group) Publish() error {
+	return publish(group)
+}
+
 // Unpublish ...
 func (group *Group) Unpublish() error {
-	group.IsDraft = true
-	draftIndex, err := GetDraftIndex(group.CreatedBy)
-
-	if err != nil {
-		return err
-	}
-
-	if draftIndex.GroupID != "" {
-		return errors.New("You still have an unfinished draft")
-	}
-
-	draftIndex.GroupID = group.ID
-	draftIndex.Save()
-
-	return nil
+	return unpublish(group)
 }
 
 // GetGroup ...

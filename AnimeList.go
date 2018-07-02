@@ -2,15 +2,19 @@ package arn
 
 import (
 	"errors"
+	"fmt"
 	"sort"
+	"sync"
 
 	"github.com/aerogo/nano"
 )
 
-// AnimeList ...
+// AnimeList is a list of anime list items.
 type AnimeList struct {
 	UserID string           `json:"userId"`
 	Items  []*AnimeListItem `json:"items"`
+
+	sync.Mutex
 }
 
 // Add adds an anime to the list if it hasn't been added yet.
@@ -24,7 +28,7 @@ func (list *AnimeList) Add(animeID string) error {
 	item := &AnimeListItem{
 		AnimeID: animeID,
 		Status:  AnimeListStatusPlanned,
-		Rating:  &AnimeRating{},
+		Rating:  AnimeListItemRating{},
 		Created: creationDate,
 		Edited:  creationDate,
 	}
@@ -33,12 +37,18 @@ func (list *AnimeList) Add(animeID string) error {
 		return errors.New("Invalid anime ID")
 	}
 
+	list.Lock()
 	list.Items = append(list.Items, item)
+	list.Unlock()
+
 	return nil
 }
 
 // Remove removes the anime ID from the list.
 func (list *AnimeList) Remove(animeID string) bool {
+	list.Lock()
+	defer list.Unlock()
+
 	for index, item := range list.Items {
 		if item.AnimeID == animeID {
 			list.Items = append(list.Items[:index], list.Items[index+1:]...)
@@ -51,6 +61,9 @@ func (list *AnimeList) Remove(animeID string) bool {
 
 // Contains checks if the list contains the anime ID already.
 func (list *AnimeList) Contains(animeID string) bool {
+	list.Lock()
+	defer list.Unlock()
+
 	for _, item := range list.Items {
 		if item.AnimeID == animeID {
 			return true
@@ -60,8 +73,25 @@ func (list *AnimeList) Contains(animeID string) bool {
 	return false
 }
 
+// HasItemsWithStatus checks if the list contains an anime with the given status.
+func (list *AnimeList) HasItemsWithStatus(status string) bool {
+	list.Lock()
+	defer list.Unlock()
+
+	for _, item := range list.Items {
+		if item.Status == status {
+			return true
+		}
+	}
+
+	return false
+}
+
 // Find returns the list item with the specified anime ID, if available.
 func (list *AnimeList) Find(animeID string) *AnimeListItem {
+	list.Lock()
+	defer list.Unlock()
+
 	for _, item := range list.Items {
 		if item.AnimeID == animeID {
 			return item
@@ -78,7 +108,9 @@ func (list *AnimeList) Import(item *AnimeListItem) {
 
 	// If it doesn't exist yet: Simply add it.
 	if existing == nil {
+		list.Lock()
 		list.Items = append(list.Items, item)
+		list.Unlock()
 		return
 	}
 
@@ -126,6 +158,9 @@ func (list *AnimeList) User() *User {
 
 // Sort ...
 func (list *AnimeList) Sort() {
+	list.Lock()
+	defer list.Unlock()
+
 	sort.Slice(list.Items, func(i, j int) bool {
 		a := list.Items[i]
 		b := list.Items[j]
@@ -161,6 +196,23 @@ func (list *AnimeList) Sort() {
 	})
 }
 
+// SortByRating sorts the anime list by overall rating.
+func (list *AnimeList) SortByRating() {
+	list.Lock()
+	defer list.Unlock()
+
+	sort.Slice(list.Items, func(i, j int) bool {
+		a := list.Items[i]
+		b := list.Items[j]
+
+		if a.Rating.Overall == b.Rating.Overall {
+			return a.Anime().Title.Canonical < b.Anime().Title.Canonical
+		}
+
+		return a.Rating.Overall > b.Rating.Overall
+	})
+}
+
 // Watching ...
 func (list *AnimeList) Watching() *AnimeList {
 	return list.FilterStatus(AnimeListStatusWatching)
@@ -173,8 +225,30 @@ func (list *AnimeList) FilterStatus(status string) *AnimeList {
 		Items:  []*AnimeListItem{},
 	}
 
+	list.Lock()
+	defer list.Unlock()
+
 	for _, item := range list.Items {
-		if item.Status == status { // (item.Status == AnimeListStatusPlanned)
+		if item.Status == status {
+			newList.Items = append(newList.Items, item)
+		}
+	}
+
+	return newList
+}
+
+// WithoutPrivateItems returns a new anime list with the private items removed.
+func (list *AnimeList) WithoutPrivateItems() *AnimeList {
+	newList := &AnimeList{
+		UserID: list.UserID,
+		Items:  []*AnimeListItem{},
+	}
+
+	list.Lock()
+	defer list.Unlock()
+
+	for _, item := range list.Items {
+		if !item.Private {
 			newList.Items = append(newList.Items, item)
 		}
 	}
@@ -211,6 +285,9 @@ func (list *AnimeList) SplitByStatus() map[string]*AnimeList {
 		Items:  []*AnimeListItem{},
 	}
 
+	list.Lock()
+	defer list.Unlock()
+
 	for _, item := range list.Items {
 		statusList := statusToList[item.Status]
 		statusList.Items = append(statusList.Items, item)
@@ -221,6 +298,9 @@ func (list *AnimeList) SplitByStatus() map[string]*AnimeList {
 
 // NormalizeRatings normalizes all ratings so that they are perfectly stretched among the full scale.
 func (list *AnimeList) NormalizeRatings() {
+	list.Lock()
+	defer list.Unlock()
+
 	mapped := map[float64]float64{}
 	all := []float64{}
 
@@ -261,6 +341,42 @@ func (list *AnimeList) NormalizeRatings() {
 		item.Rating.Overall = mapped[item.Rating.Overall]
 		item.Rating.Clamp()
 	}
+}
+
+// Genres returns a map of genre names mapped to the list items that belong to that genre.
+func (list *AnimeList) Genres() map[string][]*AnimeListItem {
+	genreToListItems := map[string][]*AnimeListItem{}
+
+	for _, item := range list.Items {
+		for _, genre := range item.Anime().Genres {
+			genreToListItems[genre] = append(genreToListItems[genre], item)
+		}
+	}
+
+	return genreToListItems
+}
+
+// RemoveDuplicates removes duplicate entries.
+func (list *AnimeList) RemoveDuplicates() {
+	list.Lock()
+	defer list.Unlock()
+
+	existed := map[string]bool{}
+	newItems := make([]*AnimeListItem, 0, len(list.Items))
+
+	for _, item := range list.Items {
+		_, exists := existed[item.AnimeID]
+
+		if exists {
+			fmt.Println(list.User().Nick, "removed anime list item duplicate", item.AnimeID)
+			continue
+		}
+
+		newItems = append(newItems, item)
+		existed[item.AnimeID] = true
+	}
+
+	list.Items = newItems
 }
 
 // StreamAnimeLists returns a stream of all anime.

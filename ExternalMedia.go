@@ -15,13 +15,13 @@ type ExternalMedia struct {
 	ServiceID string `json:"serviceId" editable:"true"`
 }
 
-// EmbedLink ...
+// EmbedLink returns the embed link used in iframes for the given media.
 func (media *ExternalMedia) EmbedLink() string {
 	switch media.Service {
 	case "SoundCloud":
 		return "//w.soundcloud.com/player/?url=https://api.soundcloud.com/tracks/" + media.ServiceID + "?auto_play=false&hide_related=true&show_comments=false&show_user=false&show_reposts=false&visual=true"
 	case "Youtube":
-		return "//www.youtube.com/embed/" + media.ServiceID + "?showinfo=0"
+		return "//youtube.com/embed/" + media.ServiceID + "?showinfo=0"
 	case "DailyMotion":
 		return "//www.dailymotion.com/embed/video/" + media.ServiceID
 	case "NicoVideo":
@@ -43,7 +43,7 @@ func (media *ExternalMedia) EmbedLink() string {
 // 		}
 
 // 		var soundcloud SoundCloudTrack
-// 		err := json.Unmarshal(body, &soundcloud)
+// 		err := jsoniter.Unmarshal(body, &soundcloud)
 
 // 		if err != nil {
 // 			color.Red(err.Error())
@@ -64,7 +64,7 @@ func (media *ExternalMedia) EmbedLink() string {
 // 		}
 
 // 		var response youtube.VideoListResponse
-// 		json.Unmarshal(body, &response)
+// 		jsoniter.Unmarshal(body, &response)
 
 // 		if len(response.Items) == 0 {
 // 			color.Red("Youtube: Items field is empty")

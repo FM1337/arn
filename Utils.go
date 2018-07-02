@@ -1,8 +1,8 @@
 package arn
 
 import (
-	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"reflect"
 	"regexp"
@@ -14,13 +14,19 @@ import (
 	"github.com/aerogo/mirror"
 	"github.com/animenotifier/kitsu"
 	"github.com/animenotifier/mal"
+	jsoniter "github.com/json-iterator/go"
 	shortid "github.com/ventu-io/go-shortid"
-	"github.com/xrash/smetrics"
 )
 
-var stripTagsRegex = regexp.MustCompile(`<[^>]*>`)
-var sourceRegex = regexp.MustCompile(`\(Source: (.*?)\)`)
-var writtenByRegex = regexp.MustCompile(`\[Written by (.*?)\]`)
+var (
+	// MediaHost is the host we use to link image files.
+	MediaHost = "media.notify.moe"
+
+	// Regular expressions
+	stripTagsRegex = regexp.MustCompile(`<[^>]*>`)
+	sourceRegex    = regexp.MustCompile(`\(Source: (.*?)\)`)
+	writtenByRegex = regexp.MustCompile(`\[Written by (.*?)\]`)
+)
 
 // GenerateID generates a unique ID for a given table.
 func GenerateID(table string) string {
@@ -32,7 +38,7 @@ func GenerateID(table string) string {
 	for {
 		_, err := DB.Get(table, id)
 
-		if err != nil && strings.Index(err.Error(), "not found") != -1 {
+		if err != nil && strings.Contains(err.Error(), "not found") {
 			return id
 		}
 
@@ -65,6 +71,60 @@ func GetUserFromContext(ctx *aero.Context) *User {
 	}
 
 	return user
+}
+
+// GetObjectTitle ...
+func GetObjectTitle(typeName string, id string) string {
+	obj, err := DB.Get(typeName, id)
+
+	if err != nil {
+		return fmt.Sprintf("<not found: %s>", id)
+	}
+
+	return fmt.Sprint(obj)
+}
+
+// GetObjectLink ...
+func GetObjectLink(typeName string, id string) string {
+	obj, err := DB.Get(typeName, id)
+
+	if err != nil {
+		return fmt.Sprintf("<not found: %s>", id)
+	}
+
+	linkable, ok := obj.(Linkable)
+
+	if ok {
+		return linkable.Link()
+	}
+
+	return "/" + strings.ToLower(typeName) + "/" + id
+}
+
+// FilterIDTags returns all IDs of the given type in the tag list.
+func FilterIDTags(tags []string, idType string) []string {
+	var idList []string
+	prefix := idType + ":"
+
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, prefix) {
+			id := strings.TrimPrefix(tag, prefix)
+			idList = append(idList, id)
+		}
+	}
+
+	return idList
+}
+
+// JSON turns the object into a JSON string.
+func JSON(obj interface{}) string {
+	data, err := jsoniter.Marshal(obj)
+
+	if err == nil {
+		return string(data)
+	}
+
+	return err.Error()
 }
 
 // SetObjectProperties updates the object with the given map[string]interface{}
@@ -123,6 +183,29 @@ func FixGender(gender string) string {
 	return gender
 }
 
+// DateToSeason returns the season of the year for the given date.
+func DateToSeason(date time.Time) string {
+	month := date.Month()
+
+	if month >= 4 && month <= 6 {
+		return "spring"
+	}
+
+	if month >= 7 && month <= 9 {
+		return "summer"
+	}
+
+	if month >= 10 && month <= 12 {
+		return "autumn"
+	}
+
+	if month >= 1 && month < 4 {
+		return "winter"
+	}
+
+	return ""
+}
+
 // AnimeRatingStars displays the rating in Unicode stars.
 func AnimeRatingStars(rating float64) string {
 	stars := int(rating/20 + 0.5)
@@ -135,7 +218,7 @@ func EpisodesToString(episodes int) string {
 		return "?"
 	}
 
-	return ToString(episodes)
+	return fmt.Sprint(episodes)
 }
 
 // EpisodeCountMax is used for the max value of number input on episodes.
@@ -150,11 +233,6 @@ func EpisodeCountMax(episodes int) string {
 // DateTimeUTC returns the current UTC time in RFC3339 format.
 func DateTimeUTC() string {
 	return time.Now().UTC().Format(time.RFC3339)
-}
-
-// StringSimilarity returns 1.0 if the strings are equal and goes closer to 0 when they are different.
-func StringSimilarity(a string, b string) float64 {
-	return smetrics.JaroWinkler(a, b, 0.7, 4)
 }
 
 // OverallRatingName returns Overall in general, but Hype when episodes watched is zero.
@@ -231,15 +309,14 @@ func ListItemStatusName(status string) string {
 	}
 }
 
+// IsTest returns true if the program is currently running in the "go test" tool.
+func IsTest() bool {
+	return flag.Lookup("test.v") != nil
+}
+
 // PanicOnError will panic if the error is not nil.
 func PanicOnError(err error) {
 	if err != nil {
 		panic(err)
 	}
-}
-
-// PrettyPrint prints the object as indented JSON data on the console.
-func PrettyPrint(obj interface{}) {
-	pretty, _ := json.MarshalIndent(obj, "", "\t")
-	fmt.Println(string(pretty))
 }

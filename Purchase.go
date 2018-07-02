@@ -2,7 +2,7 @@ package arn
 
 import "github.com/aerogo/nano"
 
-// Purchase ...
+// Purchase represents an item purchase by a user.
 type Purchase struct {
 	ID       string `json:"id"`
 	UserID   string `json:"userId"`
@@ -14,8 +14,8 @@ type Purchase struct {
 }
 
 // Item returns the item the user bought.
-func (purchase *Purchase) Item() *Item {
-	item, _ := GetItem(purchase.ItemID)
+func (purchase *Purchase) Item() *ShopItem {
+	item, _ := GetShopItem(purchase.ItemID)
 	return item
 }
 

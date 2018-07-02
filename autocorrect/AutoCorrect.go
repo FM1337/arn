@@ -28,8 +28,8 @@ var accountNickRegexes = []*regexp.Regexp{
 var animeLinkRegex = regexp.MustCompile(`notify.moe/anime/(\d+)`)
 var osuBeatmapRegex = regexp.MustCompile(`osu.ppy.sh/s/(\d+)`)
 
-// FixTag converts links to correct tags automatically.
-func FixTag(tag string) string {
+// Tag converts links to correct tags automatically.
+func Tag(tag string) string {
 	tag = strings.TrimSpace(tag)
 	tag = strings.TrimSuffix(tag, "/")
 
@@ -50,8 +50,8 @@ func FixTag(tag string) string {
 	return tag
 }
 
-// FixUserNick automatically corrects a username.
-func FixUserNick(nick string) string {
+// UserNick automatically corrects a username.
+func UserNick(nick string) string {
 	nick = fixNickRegex.ReplaceAllString(nick, "")
 
 	if nick == "" {
@@ -71,8 +71,8 @@ func FixUserNick(nick string) string {
 	return strings.ToUpper(string(nick[0])) + nick[1:]
 }
 
-// FixAccountNick automatically corrects the username/nick of an account.
-func FixAccountNick(nick string) string {
+// AccountNick automatically corrects the username/nick of an account.
+func AccountNick(nick string) string {
 	for _, regex := range accountNickRegexes {
 		matches := regex.FindStringSubmatch(nick)
 
@@ -85,14 +85,35 @@ func FixAccountNick(nick string) string {
 	return nick
 }
 
-// FixPostText fixes common mistakes in post texts.
-func FixPostText(text string) string {
+// PostText fixes common mistakes in post texts.
+func PostText(text string) string {
 	text = strings.Replace(text, "http://", "https://", -1)
 	text = strings.TrimSpace(text)
 	return text
 }
 
-// FixThreadTitle ...
-func FixThreadTitle(title string) string {
+// ThreadTitle ...
+func ThreadTitle(title string) string {
 	return strings.TrimSpace(title)
+}
+
+// Website fixed common website mistakes.
+func Website(url string) string {
+	// Disallow links that aren't actual websites,
+	// just tracker links.
+	if IsTrackerLink(url) {
+		return ""
+	}
+
+	url = strings.TrimSpace(url)
+	url = strings.TrimPrefix(url, "http://")
+	url = strings.TrimPrefix(url, "https://")
+	url = strings.TrimSuffix(url, "/")
+
+	return url
+}
+
+// IsTrackerLink returns true if the URL is a tracker link.
+func IsTrackerLink(url string) bool {
+	return strings.Contains(url, "myanimelist.net/") || strings.Contains(url, "anilist.co/") || strings.Contains(url, "kitsu.io/")
 }

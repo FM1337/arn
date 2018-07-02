@@ -3,44 +3,66 @@ package arn
 import (
 	"errors"
 	"fmt"
+	"io/ioutil"
+	"net/http"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 
+	"github.com/aerogo/http/client"
 	"github.com/animenotifier/arn/autocorrect"
-	"github.com/animenotifier/arn/validator"
+	"github.com/animenotifier/arn/validate"
+	"github.com/animenotifier/osu"
 	gravatar "github.com/ungerik/go-gravatar"
 )
 
 var setNickMutex sync.Mutex
 var setEmailMutex sync.Mutex
 
-// User ...
+// User is a registered person.
 type User struct {
-	ID         string       `json:"id"`
-	Nick       string       `json:"nick" editable:"true"`
-	FirstName  string       `json:"firstName"`
-	LastName   string       `json:"lastName"`
-	Email      string       `json:"email"`
-	Role       string       `json:"role"`
-	Registered string       `json:"registered"`
-	LastLogin  string       `json:"lastLogin"`
-	LastSeen   string       `json:"lastSeen"`
-	ProExpires string       `json:"proExpires"`
-	Gender     string       `json:"gender"`
-	Language   string       `json:"language"`
-	Tagline    string       `json:"tagline" editable:"true"`
-	Website    string       `json:"website" editable:"true"`
-	IP         string       `json:"ip"`
-	UserAgent  string       `json:"agent"`
-	Balance    int          `json:"balance"`
-	Avatar     UserAvatar   `json:"avatar"`
-	AgeRange   UserAgeRange `json:"ageRange"`
-	Location   UserLocation `json:"location"`
-	Accounts   UserAccounts `json:"accounts"`
-	Browser    UserBrowser  `json:"browser"`
-	OS         UserOS       `json:"os"`
-	Following  []string     `json:"following"`
+	ID           string       `json:"id"`
+	Nick         string       `json:"nick" editable:"true"`
+	FirstName    string       `json:"firstName" private:"true"`
+	LastName     string       `json:"lastName" private:"true"`
+	Email        string       `json:"email" editable:"true" private:"true"`
+	Role         string       `json:"role"`
+	Registered   string       `json:"registered"`
+	LastLogin    string       `json:"lastLogin" private:"true"`
+	LastSeen     string       `json:"lastSeen" private:"true"`
+	ProExpires   string       `json:"proExpires" editable:"true"`
+	Gender       string       `json:"gender" private:"true"`
+	Language     string       `json:"language"`
+	Tagline      string       `json:"tagline" editable:"true"`
+	Introduction string       `json:"introduction" editable:"true" type:"textarea"`
+	Website      string       `json:"website" editable:"true"`
+	IP           string       `json:"ip" private:"true"`
+	UserAgent    string       `json:"agent" private:"true"`
+	Balance      int          `json:"balance" private:"true"`
+	Avatar       UserAvatar   `json:"avatar"`
+	Cover        UserCover    `json:"cover"`
+	AgeRange     UserAgeRange `json:"ageRange" private:"true"`
+	Accounts     UserAccounts `json:"accounts" private:"true"`
+	Browser      UserBrowser  `json:"browser" private:"true"`
+	OS           UserOS       `json:"os" private:"true"`
+	Location     *Location    `json:"location" private:"true"`
+
+	// user.Email = ""
+	// user.Gender = ""
+	// user.FirstName = ""
+	// user.LastName = ""
+	// user.IP = ""
+	// user.UserAgent = ""
+	// user.LastLogin = ""
+	// user.LastSeen = ""
+	// user.Accounts.Facebook.ID = ""
+	// user.Accounts.Google.ID = ""
+	// user.Accounts.Twitter.ID = ""
+	// user.AgeRange = UserAgeRange{}
+	// user.Location = &Location{}
+	// user.Browser = UserBrowser{}
+	// user.OS = UserOS{}
 }
 
 // NewUser creates an empty user object with a unique ID.
@@ -49,7 +71,7 @@ func NewUser() *User {
 		ID: GenerateID("User"),
 
 		// Avoid nil value fields
-		Following: make([]string, 0),
+		Location: &Location{},
 	}
 
 	return user
@@ -68,13 +90,15 @@ func RegisterUser(user *User) {
 	})
 
 	// Save email in EmailToUser table
-	DB.Set("EmailToUser", user.Email, &EmailToUser{
-		Email:  user.Email,
-		UserID: user.ID,
-	})
+	if user.Email != "" {
+		DB.Set("EmailToUser", user.Email, &EmailToUser{
+			Email:  user.Email,
+			UserID: user.ID,
+		})
+	}
 
 	// Create default settings
-	NewSettings(user.ID).Save()
+	NewSettings(user).Save()
 
 	// Add empty anime list
 	DB.Set("AnimeList", user.ID, &AnimeList{
@@ -95,34 +119,67 @@ func RegisterUser(user *User) {
 	})
 
 	// Add empty follow list
-	follows := &UserFollows{}
-	follows.UserID = user.ID
-	follows.Items = []string{}
+	NewUserFollows(user.ID).Save()
 
-	DB.Set("UserFollows", user.ID, follows)
+	// Add empty notifications list
+	NewUserNotifications(user.ID).Save()
 
-	// Refresh avatar async
-	go user.RefreshAvatar()
+	// Fetch gravatar
+	if user.Email != "" {
+		gravatarURL := gravatar.Url(user.Email) + "?s=" + fmt.Sprint(AvatarMaxSize) + "&d=404&r=pg"
+		gravatarURL = strings.Replace(gravatarURL, "http://", "https://", 1)
+
+		response, err := client.Get(gravatarURL).End()
+
+		if err == nil && response.StatusCode() == http.StatusOK {
+			data := response.Bytes()
+			user.SetAvatarBytes(data)
+		}
+	}
 }
 
-// SendNotification ...
-func (user *User) SendNotification(notification *Notification) {
+// SendNotification accepts a PushNotification and generates a new Notification object.
+// The notification is then sent to all registered push devices.
+func (user *User) SendNotification(pushNotification *PushNotification) {
 	// Don't ever send notifications in development mode
 	if IsDevelopment() && user.ID != "4J6qpK1ve" {
 		return
 	}
 
+	// Save notification in database
+	notification := NewNotification(user.ID, pushNotification)
+	notification.Save()
+
+	userNotifications := user.Notifications()
+	userNotifications.Add(notification.ID)
+	userNotifications.Save()
+
+	// Send push notification
 	subs := user.PushSubscriptions()
 	expired := []*PushSubscription{}
 
 	for _, sub := range subs.Items {
-		err := sub.SendNotification(notification)
+		resp, err := sub.SendNotification(pushNotification)
 
-		if err != nil {
-			if err.Error() == "Subscription expired" {
-				expired = append(expired, sub)
-			}
+		if resp != nil && resp.StatusCode == http.StatusGone {
+			expired = append(expired, sub)
+			continue
 		}
+
+		// Print errors
+		if err != nil {
+			fmt.Println(err)
+			continue
+		}
+
+		// Print bad status codes
+		if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
+			body, _ := ioutil.ReadAll(resp.Body)
+			fmt.Println(resp.StatusCode, string(body))
+			continue
+		}
+
+		sub.LastSuccess = DateTimeUTC()
 	}
 
 	// Remove expired items
@@ -130,9 +187,10 @@ func (user *User) SendNotification(notification *Notification) {
 		for _, sub := range expired {
 			subs.Remove(sub.ID())
 		}
-
-		subs.Save()
 	}
+
+	// Save changes
+	subs.Save()
 }
 
 // RealName returns the real name of the user.
@@ -148,34 +206,35 @@ func (user *User) RealName() string {
 	return user.FirstName + " " + user.LastName
 }
 
-// RegisteredTime ...
+// RegisteredTime returns the time the user registered his account.
 func (user *User) RegisteredTime() time.Time {
 	reg, _ := time.Parse(time.RFC3339, user.Registered)
 	return reg
 }
 
-// IsActive ...
-func (user *User) IsActive() bool {
-	// Exclude people who didn't change their nickname.
-	if !user.HasNick() {
-		return false
-	}
-
+// LastSeenTime returns the time the user was last seen on the site.
+func (user *User) LastSeenTime() time.Time {
 	lastSeen, _ := time.Parse(time.RFC3339, user.LastSeen)
-	oneWeekAgo := time.Now().Add(-7 * 24 * time.Hour)
+	return lastSeen
+}
 
-	if lastSeen.Unix() < oneWeekAgo.Unix() {
+// IsActive tells you whether the user is active.
+func (user *User) IsActive() bool {
+	lastSeen, _ := time.Parse(time.RFC3339, user.LastSeen)
+	twoWeeksAgo := time.Now().Add(-14 * 24 * time.Hour)
+
+	if lastSeen.Unix() < twoWeeksAgo.Unix() {
 		return false
 	}
 
-	if len(user.AnimeList().Items) == 0 {
+	if !user.AnimeList().HasItemsWithStatus(AnimeListStatusWatching) {
 		return false
 	}
 
 	return true
 }
 
-// IsPro ...
+// IsPro returns whether the user is a PRO user or not.
 func (user *User) IsPro() bool {
 	if user.ProExpires == "" {
 		return false
@@ -184,20 +243,22 @@ func (user *User) IsPro() bool {
 	return DateTimeUTC() < user.ProExpires
 }
 
-// ExtendProDuration ...
+// ExtendProDuration extends the PRO account duration by the given duration.
 func (user *User) ExtendProDuration(duration time.Duration) {
-	var startDate time.Time
+	now := time.Now().UTC()
+	expires, _ := time.Parse(time.RFC3339, user.ProExpires)
 
-	if user.ProExpires == "" {
-		startDate = time.Now().UTC()
-	} else {
-		startDate, _ = time.Parse(time.RFC3339, user.ProExpires)
+	// If the user never had a PRO account yet,
+	// or if it already expired,
+	// use the current time as the start time.
+	if user.ProExpires == "" || now.Unix() > expires.Unix() {
+		expires = now
 	}
 
-	user.ProExpires = startDate.Add(duration).Format(time.RFC3339)
+	user.ProExpires = expires.Add(duration).Format(time.RFC3339)
 }
 
-// TimeSinceRegistered ...
+// TimeSinceRegistered returns the duration since the user registered his account.
 func (user *User) TimeSinceRegistered() time.Duration {
 	registered, _ := time.Parse(time.RFC3339, user.Registered)
 	return time.Since(registered)
@@ -213,7 +274,7 @@ func (user *User) WebsiteURL() string {
 	return "https://" + user.WebsiteShortURL()
 }
 
-// WebsiteShortURL ...
+// WebsiteShortURL returns the user website without the protocol.
 func (user *User) WebsiteShortURL() string {
 	return strings.Replace(strings.Replace(user.Website, "https://", "", 1), "http://", "", 1)
 }
@@ -223,27 +284,31 @@ func (user *User) Link() string {
 	return "/+" + user.Nick
 }
 
-// CoverImageURL ...
-func (user *User) CoverImageURL() string {
-	return "/images/cover/default.jpg"
-}
-
-// HasAvatar ...
+// HasAvatar tells you whether the user has an avatar or not.
 func (user *User) HasAvatar() bool {
 	return user.Avatar.Extension != ""
 }
 
-// SmallAvatar ...
-func (user *User) SmallAvatar() string {
-	return "//media.notify.moe/images/avatars/small/" + user.ID + user.Avatar.Extension
+// AvatarLink returns the URL to the user avatar.
+// Expects "small" (50 x 50) or "large" (560 x 560) for the size parameter.
+func (user *User) AvatarLink(size string) string {
+	if user.HasAvatar() {
+		return fmt.Sprintf("//%s/images/avatars/%s/%s%s?%v", MediaHost, size, user.ID, user.Avatar.Extension, user.Avatar.LastModified)
+	}
+
+	return fmt.Sprintf("//%s/images/elements/no-avatar.svg", MediaHost)
 }
 
-// LargeAvatar ...
-func (user *User) LargeAvatar() string {
-	return "//media.notify.moe/images/avatars/large/" + user.ID + user.Avatar.Extension
+// CoverLink ...
+func (user *User) CoverLink(size string) string {
+	if user.Cover.Extension != "" {
+		return fmt.Sprintf("//%s/images/covers/%s/%s%s?%v", MediaHost, size, user.ID, user.Cover.Extension, user.Cover.LastModified)
+	}
+
+	return "/images/elements/default-cover.jpg"
 }
 
-// Gravatar ...
+// Gravatar returns the URL to the gravatar if an email has been registered.
 func (user *User) Gravatar() string {
 	if user.Email == "" {
 		return ""
@@ -252,23 +317,35 @@ func (user *User) Gravatar() string {
 	return gravatar.SecureUrl(user.Email) + "?s=" + fmt.Sprint(AvatarMaxSize)
 }
 
-// PushSubscriptions ...
-func (user *User) PushSubscriptions() *PushSubscriptions {
-	subs, _ := GetPushSubscriptions(user.ID)
-	return subs
+// EditorScore returns the editor score.
+func (user *User) EditorScore() int {
+	ignoreDifferences := FilterIgnoreAnimeDifferences(func(entry *IgnoreAnimeDifference) bool {
+		return entry.CreatedBy == user.ID
+	})
+
+	score := len(ignoreDifferences) * IgnoreAnimeDifferenceEditorScore
+
+	logEntries := FilterEditLogEntries(func(entry *EditLogEntry) bool {
+		return entry.UserID == user.ID
+	})
+
+	for _, entry := range logEntries {
+		score += entry.EditorScore()
+	}
+
+	return score
 }
 
-// Inventory ...
-func (user *User) Inventory() *Inventory {
-	inventory, _ := GetInventory(user.ID)
-	return inventory
-}
-
-// ActivateItemEffect ...
+// ActivateItemEffect activates an item in the user inventory by the given item ID.
 func (user *User) ActivateItemEffect(itemID string) error {
 	month := 30 * 24 * time.Hour
 
 	switch itemID {
+	case "pro-account-1":
+		user.ExtendProDuration(1 * month)
+		user.Save()
+		return nil
+
 	case "pro-account-3":
 		user.ExtendProDuration(3 * month)
 		user.Save()
@@ -299,9 +376,9 @@ func (user *User) SetNick(newName string) error {
 	setNickMutex.Lock()
 	defer setNickMutex.Unlock()
 
-	newName = autocorrect.FixUserNick(newName)
+	newName = autocorrect.UserNick(newName)
 
-	if !validator.IsValidNick(newName) {
+	if !validate.Nick(newName) {
 		return errors.New("Invalid nickname")
 	}
 
@@ -314,7 +391,7 @@ func (user *User) SetNick(newName string) error {
 
 	// If there was no error: the username exists.
 	// If "not found" is not included in the error message it's a different error type.
-	if err == nil || strings.Index(err.Error(), "not found") == -1 {
+	if err == nil || !strings.Contains(err.Error(), "not found") {
 		return errors.New("Username '" + newName + "' is taken already")
 	}
 
@@ -341,7 +418,7 @@ func (user *User) SetEmail(newName string) error {
 	setEmailMutex.Lock()
 	defer setEmailMutex.Unlock()
 
-	if !validator.IsValidEmail(user.Email) {
+	if !validate.Email(user.Email) {
 		return errors.New("Invalid email address")
 	}
 
@@ -355,6 +432,25 @@ func (user *User) SetEmail(newName string) error {
 		Email:  user.Email,
 		UserID: user.ID,
 	})
+
+	return nil
+}
+
+// RefreshOsuInfo refreshes a user's Osu information.
+func (user *User) RefreshOsuInfo() error {
+	if user.Accounts.Osu.Nick == "" {
+		return nil
+	}
+
+	osu, err := osu.GetUser(user.Accounts.Osu.Nick)
+
+	if err != nil {
+		return err
+	}
+
+	user.Accounts.Osu.PP, _ = strconv.ParseFloat(osu.PPRaw, 64)
+	user.Accounts.Osu.Level, _ = strconv.ParseFloat(osu.Level, 64)
+	user.Accounts.Osu.Accuracy, _ = strconv.ParseFloat(osu.Accuracy, 64)
 
 	return nil
 }

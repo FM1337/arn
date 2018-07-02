@@ -3,18 +3,23 @@ package arn
 import (
 	"errors"
 	"fmt"
+	"reflect"
 
 	"github.com/aerogo/aero"
 	"github.com/aerogo/api"
+	"github.com/aerogo/markdown"
 	"github.com/animenotifier/arn/autocorrect"
 )
 
 // Force interface implementations
 var (
-	_ Likeable       = (*Post)(nil)
-	_ api.Newable    = (*Post)(nil)
-	_ api.Editable   = (*Post)(nil)
-	_ api.Actionable = (*Post)(nil)
+	_ Likeable          = (*Post)(nil)
+	_ LikeEventReceiver = (*Post)(nil)
+	_ fmt.Stringer      = (*Post)(nil)
+	_ api.Newable       = (*Post)(nil)
+	_ api.Editable      = (*Post)(nil)
+	_ api.Actionable    = (*Post)(nil)
+	_ api.Deletable     = (*Post)(nil)
 )
 
 // Actions
@@ -37,7 +42,7 @@ func (post *Post) Authorize(ctx *aero.Context, action string) error {
 	if action == "edit" {
 		user := GetUserFromContext(ctx)
 
-		if post.AuthorID != user.ID {
+		if post.CreatedBy != user.ID && user.Role != "admin" {
 			return errors.New("Can't edit the posts of other users")
 		}
 	}
@@ -53,28 +58,26 @@ func (post *Post) Create(ctx *aero.Context) error {
 		return err
 	}
 
-	userID, ok := ctx.Session().Get("userId").(string)
+	user := GetUserFromContext(ctx)
 
-	if !ok || userID == "" {
+	if user == nil {
 		return errors.New("Not logged in")
-	}
-
-	user, err := GetUser(userID)
-
-	if err != nil {
-		return err
 	}
 
 	post.ID = GenerateID("Post")
 	post.Text, _ = data["text"].(string)
-	post.AuthorID = user.ID
+	post.CreatedBy = user.ID
 	post.ThreadID, _ = data["threadId"].(string)
 	post.Likes = []string{}
 	post.Created = DateTimeUTC()
 	post.Edited = ""
 
 	// Post-process text
-	post.Text = autocorrect.FixPostText(post.Text)
+	post.Text = autocorrect.PostText(post.Text)
+
+	if len(post.Text) < 5 {
+		return errors.New("Text too short: Should be at least 5 characters")
+	}
 
 	// Tags
 	tags, _ := data["tags"].([]interface{})
@@ -84,14 +87,16 @@ func (post *Post) Create(ctx *aero.Context) error {
 		post.Tags[i] = tags[i].(string)
 	}
 
-	if len(post.Text) < 5 {
-		return errors.New("Text too short: Should be at least 5 characters")
-	}
-
+	// Thread
 	thread, threadErr := GetThread(post.ThreadID)
 
 	if threadErr != nil {
 		return errors.New("Thread does not exist")
+	}
+
+	// Is the thread locked?
+	if thread.Locked {
+		return errors.New("Thread is locked")
 	}
 
 	// Bind to local variable for the upcoming goroutine.
@@ -108,21 +113,22 @@ func (post *Post) Create(ctx *aero.Context) error {
 
 		if err == nil {
 			notifyUsers := map[string]bool{}
-			notifyUsers[thread.AuthorID] = true
+			notifyUsers[thread.CreatedBy] = true
 
 			for _, post := range posts {
-				notifyUsers[post.AuthorID] = true
+				notifyUsers[post.CreatedBy] = true
 			}
 
 			// Exclude author of the new post
-			delete(notifyUsers, post.AuthorID)
+			delete(notifyUsers, post.CreatedBy)
 
 			// Notify
-			notification := &Notification{
+			notification := &PushNotification{
 				Title:   user.Nick + " replied",
 				Message: fmt.Sprintf("%s replied in the thread \"%s\".", user.Nick, thread.Title),
-				Icon:    "https://notify.moe/images/brand/220.png",
+				Icon:    "https:" + user.AvatarLink("large"),
 				Link:    post.Link(),
+				Type:    NotificationTypeForumReply,
 			}
 
 			for notifyUserID := range notifyUsers {
@@ -143,12 +149,71 @@ func (post *Post) Create(ctx *aero.Context) error {
 	// Save the parent thread
 	thread.Save()
 
+	// Write log entry
+	logEntry := NewEditLogEntry(user.ID, "create", "Post", post.ID, "", "", "")
+	logEntry.Save()
+
+	return nil
+}
+
+// Edit saves a log entry for the edit.
+func (post *Post) Edit(ctx *aero.Context, key string, value reflect.Value, newValue reflect.Value) (bool, error) {
+	user := GetUserFromContext(ctx)
+
+	// Write log entry
+	logEntry := NewEditLogEntry(user.ID, "edit", "Post", post.ID, key, fmt.Sprint(value.Interface()), fmt.Sprint(newValue.Interface()))
+	logEntry.Save()
+
+	return false, nil
+}
+
+// OnAppend saves a log entry.
+func (post *Post) OnAppend(ctx *aero.Context, key string, index int, obj interface{}) {
+	user := GetUserFromContext(ctx)
+	logEntry := NewEditLogEntry(user.ID, "arrayAppend", "Post", post.ID, fmt.Sprintf("%s[%d]", key, index), "", fmt.Sprint(obj))
+	logEntry.Save()
+}
+
+// OnRemove saves a log entry.
+func (post *Post) OnRemove(ctx *aero.Context, key string, index int, obj interface{}) {
+	user := GetUserFromContext(ctx)
+	logEntry := NewEditLogEntry(user.ID, "arrayRemove", "Post", post.ID, fmt.Sprintf("%s[%d]", key, index), fmt.Sprint(obj), "")
+	logEntry.Save()
+}
+
+// DeleteInContext deletes the post in the given context.
+func (post *Post) DeleteInContext(ctx *aero.Context) error {
+	user := GetUserFromContext(ctx)
+
+	// Write log entry
+	logEntry := NewEditLogEntry(user.ID, "delete", "Post", post.ID, "", fmt.Sprint(post), "")
+	logEntry.Save()
+
+	return post.Delete()
+}
+
+// Delete deletes the post from the database.
+func (post *Post) Delete() error {
+	thread, err := GetThread(post.ThreadID)
+
+	if err != nil {
+		return err
+	}
+
+	// Remove the reference of the post in the thread that contains it
+	if !thread.Remove(post.ID) {
+		return errors.New("This post does not exist in the thread")
+	}
+
+	thread.Save()
+	DB.Delete("Post", post.ID)
 	return nil
 }
 
 // AfterEdit updates the date it has been edited.
 func (post *Post) AfterEdit(ctx *aero.Context) error {
 	post.Edited = DateTimeUTC()
+	post.html = markdown.Render(post.Text)
 	return nil
 }
 
